@@ -1,0 +1,127 @@
+d-i debian-installer/add-kernel-opts string net.ifnames=0
+
+d-i debian-installer/locale string ru_RU
+d-i debian-installer/locale select ru_RU.UTF-8
+d-i debian-installer/language string ru
+d-i debian-installer/country string RU
+d-i debian-installer/keymap string ru
+
+d-i console-tools/archs select at
+d-i console-keymaps-at/keymap select ru
+d-i console-setup/toggle string Alt+Shift
+d-i console-setup/layoutcode string ru
+d-i keyboard-configuration/toggle select Alt+Shift
+d-i keyboard-configuration/layoutcode string ru
+d-i keyboard-configuration/xkb-keymap select ru
+d-i languagechooser/language-name-fb select Russian
+d-i countrychooser/country-name select Russia
+
+d-i localechooser/translation/warn-light boolean true
+d-i localechooser/translation/warn-severe boolean true
+
+d-i netcfg/choose_interface select auto
+
+d-i apt-setup/non-free boolean true
+d-i apt-setup/contrib boolean true
+
+d-i netcfg/get_hostname string astra
+d-i netcfg/get_hostname seen true
+d-i netcfg/get_domain string
+
+d-i apt-setup/services-select none
+d-i apt-setup/security_host string
+
+d-i netcfg/wireless_wep string
+
+d-i mirror/protocol string http
+d-i mirror/country string manual
+
+# Локальный репозиторий Astra Linux (можно поднять веб-сервер на узле с Terraform
+# и смонтировать туда образ smolensk-1.6.iso пролинковав директорию в веб-каталог)
+d-i mirror/http/hostname string 192.168.1.100
+d-i mirror/http/directory string /astra
+d-i mirror/http/proxy string
+
+d-i clock-setup/utc boolean true
+
+d-i time/zone string Europe/Moscow
+
+d-i partman-auto/method string regular
+
+d-i partman-auto/purge_lvm_from_device boolean true
+d-i partman-lvm/confirm boolean true
+
+d-i partman-auto/choose_recipe select atomic
+
+d-i partman/confirm_write_new_label boolean true
+d-i partman/choose_partition select finish
+d-i partman/confirm boolean true
+d-i	partman-auto-crypto/erase_disks	boolean	true
+d-i	partman-basicfilesystems/no_swap	boolean	true
+d-i	partman-target/mount_failed	boolean	true
+d-i	partman-partitioning/unknown_label	boolean	true
+d-i	partman-auto/purge_lvm_from_device	string	true
+d-i	partman-lvm/vgdelete_confirm	boolean	true
+d-i	partman/confirm_write_new_label	string	true
+d-i	partman-lvm/confirm	boolean	true
+d-i partman/confirm_nooverwrite boolean true
+
+d-i base-installer/kernel/image string linux-image-generic
+
+d-i passwd/make-user boolean true
+
+d-i passwd/root-password-crypted password $1$97wfBxpU$7VLLmu22I0q0tYCqkl6Y3.
+
+d-i passwd/user-fullname string vagrant
+d-i passwd/username string vagrant
+
+d-i passwd/user-password-crypted password $1$97wfBxpU$7VLLmu22I0q0tYCqkl6Y3.
+
+# Учётная запись будет добавлена в несколько стандартных начальных групп.
+# Чтобы это изменить -- отредактируйте и раскомментируйте строчку ниже.
+#d-i passwd/user-default-groups string audio cdrom dip video floppy plugdev fuse netdev bluetooth sudo
+
+d-i debian-installer/allow_unauthenticated string true
+
+tasksel tasksel/first multiselect Base, Fly, Internet, Multimedia, Office
+tasksel tasksel/astra-feat-setup multiselect
+
+d-i pkgsel/include string openssh-server
+
+astra-additional-setup	astra-additional-setup/additional-settings	multiselect	
+d-i	astra-additional-setup/additional-settings	multiselect	
+astra-additional-setup	astra-additional-setup/automatic-network-disable	multiselect	
+d-i	astra-additional-setup/automatic-network-disable	multiselect	
+d-i desktop-tablet-mode-switch/tablet-mode multiselect
+
+tripwire tripwire/use-localkey boolean false
+tripwire tripwire/use-sitekey boolean false
+tripwire tripwire/installed note ok
+portsentry portsentry/warn_no_block note ok
+astra-license astra-license/license boolean true
+krb5-config krb5-config/kerberos_servers string
+libnss-ldapd libnss-ldapd/ldap-base string
+libnss-ldapd libnss-ldapd/ldap-uris string
+libnss-ldapd libnss-ldapd/nsswitch multiselect services
+ald-client ald-client/make_config boolean false
+ald-client ald-client/manual_configure false
+astra-feat-setup astra-feat-setup/feat multiselect kiosk mode false
+astra-feat-setup astra-feat-setup/feat multiselect Служба ALD false
+d-i console-cyrillic/switch select "Клавиша Menu"
+d-i console-cyrillic/toggle select Control+Shift
+d-i samba-common/dhcp boolean false
+d-i samba-common/workgroup string testgroup1
+
+popularity-contest popularity-contest/participate boolean false
+
+d-i grub-installer/only_debian boolean true
+
+d-i grub-installer/with_other_os boolean true
+
+d-i grub-installer/password-crypted password $1$97wfBxpU$7VLLmu22I0q0tYCqkl6Y3.
+grub-installer grub-installer/password-mismatch error 
+
+d-i finish-install/reboot_in_progress note
+d-i finish-install/exit/poweroff boolean true
+
+d-i preseed/late_command string in-target systemctl enable ssh

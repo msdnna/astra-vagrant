@@ -1,0 +1,216 @@
+ENV['VAGRANT_EXPERIMENTAL'] = 'typed_triggers'
+
+require 'base64'
+require 'digest/sha1'
+require 'fileutils'
+require 'stringio'
+require 'zlib'
+
+$provision_username = 'vagrant'
+$provision_password = 'abracadabra'
+
+def gzip_base64(data)
+  o = StringIO.new()
+  w = Zlib::GzipWriter.new(o)
+  w.write(data)
+  w.close()
+  Base64.strict_encode64(o.string)
+end
+
+# add the cloud-init data as a NoCloud cloud-init iso.
+# NB libvirtd libvirt-qemu:kvm MUST have read permissions to the iso file path.
+# see https://cloudinit.readthedocs.io/en/latest/topics/datasources/nocloud.html
+def create_cloud_init_iso(cloud_init_data_path, env, config, group, cloud_init_user_data, cloud_init_network_config)
+  if !File.exists?(cloud_init_data_path) || File.mtime(cloud_init_data_path) < File.mtime(__FILE__)
+    cloud_init_data_parent_path = File.dirname(cloud_init_data_path)
+    FileUtils.mkdir_p(cloud_init_data_parent_path, :mode => 0750)
+    FileUtils.chown(nil, group, cloud_init_data_parent_path) if group
+    FileUtils.rm_f(cloud_init_data_path)
+    FileUtils.mkdir_p('tmp/cidata')
+    File.write('tmp/cidata/meta-data', '{}')
+    File.write('tmp/cidata/user-data', "#cloud-config\n#{cloud_init_user_data.to_json}")
+    File.write('tmp/cidata/network-config', cloud_init_network_config.to_json)
+    env.ui.info "Creating the cloud-init cidata.iso file at #{cloud_init_data_path}..."
+    raise 'Failed to execute xorriso to create the cloud-init cidata.iso file' unless system(
+      'xorriso',
+        '-as', 'genisoimage',
+        '-output', cloud_init_data_path,
+        '-volid', 'cidata',
+        '-joliet',
+        '-rock',
+        'tmp/cidata')
+    env.ui.info 'The cloud-init cidata.iso file was created as:'
+    system('iso-info', '--no-header', '-i', cloud_init_data_path)
+  end
+end
+def create_cloud_init_iso_trigger(config, group, cloud_init_user_data, cloud_init_network_config)
+  cloud_init_data_path = "#{ENV['TMP'] || '/tmp'}/cidata/cidata-#{Digest::SHA1.hexdigest(__FILE__)}.iso"
+  config.trigger.before :up do |trigger|
+    trigger.ruby do |env, machine|
+      create_cloud_init_iso(cloud_init_data_path, env, config, group, cloud_init_user_data, cloud_init_network_config)
+    end
+  end
+  cloud_init_data_path
+end
+
+cloud_init_network_config = {
+  # Uncomment these properties to configure a static IP address.
+  # 'version' => 2,
+  # 'ethernets' => {
+  #   'eth0' => {
+  #     'dhcp4' => false,
+  #     'addresses' => [
+  #       '10.0.0.123/24',
+  #     ],
+  #     'gateway4' => '10.0.0.1',
+  #     'nameservers' => {
+  #       'addresses' => [
+  #         '10.0.0.1',
+  #       ],
+  #     },
+  #   },
+  # },
+}
+
+cloud_init_user_data = {
+  # modify the provisioning user credentials.
+  'users' => [
+    {
+      'name' => $provision_username,
+      'plain_text_passwd' => $provision_password,
+      'lock_passwd' => false,
+    },
+  ],
+  # NB the runcmd output is written to journald and /var/log/cloud-init-output.log.
+  'runcmd' => [
+    "echo '************** DONE RUNNING CLOUD-INIT **************'",
+  ],
+}
+
+Vagrant.configure(2) do |config|
+  config.vm.box = 'astra-1.6-amd64'
+  #config.vm.box = 'astra-1.6-uefi-amd64'
+
+  config.vm.hostname = 'example.test'
+
+  # use the credentials defined in cloud_init_user_data.
+  config.ssh.username = $provision_username
+  config.ssh.password = $provision_password
+
+  config.vm.provider 'libvirt' do |lv, config|
+    lv.default_prefix = "#{File.basename(File.dirname(File.dirname(__FILE__)))}_"
+    lv.memory = 2048
+    lv.cpus = 2
+    lv.cpu_mode = 'host-passthrough'
+    lv.nested = true # nested virtualization.
+    lv.keymap = 'pt'
+    lv.storage :file, :device => :cdrom, :path => create_cloud_init_iso_trigger(config, 'kvm', cloud_init_user_data, cloud_init_network_config)
+    # add example firmware string.
+    # NB name has a maximum of 55 ascii characters.
+    # NB this will be available at /sys/firmware/qemu_fw_cfg/by_name/opt/com.example/message/raw
+    # see https://github.com/qemu/qemu/blob/1c5880e785807abcc715a7ee216706e02c1af689/docs/specs/fw_cfg.txt
+    # see https://github.com/qemu/qemu/blob/1c5880e785807abcc715a7ee216706e02c1af689/include/hw/nvram/fw_cfg.h
+    # see https://github.com/qemu/qemu/blob/1c5880e785807abcc715a7ee216706e02c1af689/hw/i386/acpi-build.c#L2101
+    # see https://www.kernel.org/doc/Documentation/ABI/testing/sysfs-firmware-qemu_fw_cfg
+    lv.qemuargs :value => '-fw_cfg'
+    lv.qemuargs :value => 'name=opt/com.example/message,string=Hello World!'
+    config.vm.synced_folder '.', '/vagrant', type: 'nfs'
+  end
+
+  config.vm.provider 'virtualbox' do |vb, config|
+    vb.linked_clone = true
+    vb.memory = 2048
+    vb.cpus = 2
+    vb.customize [
+      'storageattach', :id,
+      '--storagectl', 'SATA Controller',
+      '--device', 0,
+      '--port', 1,
+      '--type', 'dvddrive',
+      '--medium', create_cloud_init_iso_trigger(config, nil, cloud_init_user_data, cloud_init_network_config)]
+  end
+
+  config.vm.provider 'hyperv' do |hv, config|
+    hv.vmname = "#{File.basename(File.dirname(File.dirname(__FILE__)))}-example"
+    hv.linked_clone = true
+    hv.memory = 2048
+    hv.cpus = 2
+    hv.enable_virtualization_extensions = true # nested virtualization.
+    hv.vlan_id = ENV['HYPERV_VLAN_ID']
+    # see https://github.com/hashicorp/vagrant/issues/7915
+    # see https://github.com/hashicorp/vagrant/blob/10faa599e7c10541f8b7acf2f8a23727d4d44b6e/plugins/providers/hyperv/action/configure.rb#L21-L35
+    config.vm.network :private_network, bridge: ENV['HYPERV_SWITCH_NAME'] if ENV['HYPERV_SWITCH_NAME']
+    config.vm.synced_folder '.', '/vagrant',
+      type: 'smb',
+      smb_username: ENV['VAGRANT_SMB_USERNAME'] || ENV['USER'],
+      smb_password: ENV['VAGRANT_SMB_PASSWORD']
+    # add the cloud-init data iso to the hyperv vm.
+    config.trigger.before :'VagrantPlugins::HyperV::Action::StartInstance', type: :action do |trigger|
+      trigger.ruby do |env, machine|
+        create_cloud_init_iso('tmp/cidata.iso', env, config, nil, cloud_init_user_data, cloud_init_network_config)
+        system(
+          'PowerShell',
+          '-NoLogo',
+          '-NoProfile',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-Command',
+          <<~COMMAND
+            $vmName = '#{machine.provider_config.vmname}'
+            $drive = @(Get-VMDvdDrive $vmName | Where-Object {$_.Path -like '*cidata.iso'})
+            if (!$drive) {
+              Write-Host 'Adding the cidata.iso DVD to the VM...'
+              Add-VMDvdDrive $vmName -Path $PWD/tmp/cidata.iso
+            }
+          COMMAND
+        )
+      end
+    end
+  end
+
+  config.vm.provider 'vsphere' do |vsphere, override|
+    vsphere.name = ENV['VSPHERE_VM_NAME']
+    vsphere.notes = "Created from #{__FILE__}"
+    vsphere.cpu_count = 2
+    vsphere.memory_mb = 2*1024
+    vsphere.user = ENV['GOVC_USERNAME']
+    vsphere.password = ENV['GOVC_PASSWORD']
+    vsphere.insecure = true
+    vsphere.host = ENV['GOVC_HOST']
+    vsphere.data_center_name = ENV['GOVC_DATACENTER']
+    vsphere.compute_resource_name = ENV['GOVC_CLUSTER']
+    vsphere.data_store_name = ENV['GOVC_DATASTORE']
+    vsphere.template_name = ENV['VSPHERE_TEMPLATE_NAME']
+    vsphere.vm_base_path = ENV['VSPHERE_VM_FOLDER']
+    vsphere.vlan = ENV['VSPHERE_VLAN']
+    # NB the extra_config data ends-up inside the VM .vmx file.
+    # NB the guestinfo properties will be exposed by cloud-init-vmware-guestinfo
+    #    as a cloud-init datasource.
+    # See https://github.com/vmware/cloud-init-vmware-guestinfo
+    vsphere.extra_config = {
+      'guestinfo.metadata' => gzip_base64({
+        'network' => gzip_base64(cloud_init_network_config.to_json),
+        'network.encoding' => 'gzip+base64',
+      }.to_json),
+      'guestinfo.metadata.encoding' => 'gzip+base64',
+      'guestinfo.userdata' => gzip_base64("#cloud-config\n#{cloud_init_user_data.to_json}"),
+      'guestinfo.userdata.encoding' => 'gzip+base64',
+    }
+    if ENV['VAGRANT_SMB_PASSWORD']
+      override.vm.synced_folder '.', '/vagrant',
+        type: 'smb',
+        smb_username: ENV['VAGRANT_SMB_USERNAME'] || ENV['USER'],
+        smb_password: ENV['VAGRANT_SMB_PASSWORD']
+    end
+  end
+
+  config.vm.provision 'shell', inline: 'cloud-init status --long --wait', name: 'wait for cloud-init to finish'
+  config.vm.provision 'shell', inline: 'echo "firmware type is $([ -d /sys/firmware/efi ] && echo \'UEFI\' || echo \'BIOS\')"', name: 'firmware type'
+  config.vm.provision 'shell', inline: "echo \"provisioning user is $(id #{$provision_username})\""
+  config.vm.provision 'shell', inline: 'echo "machine-id is $(cat /etc/machine-id)"'
+  config.vm.provision 'shell', inline: 'cat /etc/os-release', name: 'os-release'
+  config.vm.provision 'shell', inline: 'sfdisk -l', name: 'disk partitions'
+  config.vm.provision 'shell', inline: 'lsblk -x KNAME -o KNAME,SIZE,TRAN,SUBSYSTEMS,FSTYPE,UUID,LABEL,MODEL,SERIAL', name: 'block devices'
+  config.vm.provision 'shell', inline: 'df -h', name: 'disk space usage'
+  config.vm.provision 'shell', inline: "dpkg-query -W -f='${binary:Package}\\n' | sort >/vagrant/#{config.vm.box}-packages.txt", name: 'package list'
+end
